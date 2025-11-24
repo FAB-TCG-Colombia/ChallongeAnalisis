@@ -174,7 +174,8 @@ class ChallongeExporter:
             "timeout": DEFAULT_TIMEOUT,
             "auth": (self.api_key, ""),
             "headers": {
-                "Accept": "application/vnd.api+json",
+                "Accept": "application/json",
+                "Authorization-Type": "v2",
                 "User-Agent": "ChallongeAnalisis/1.0",
             },
         }
