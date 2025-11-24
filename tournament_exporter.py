@@ -87,7 +87,6 @@ class ChallongeExporter:
         url = f"{BASE_URL}/communities/{self.community_id}/tournaments"
         page = 1
         params = {
-            "api_key": self.api_key,
             "state": "all",
             "per_page": DEFAULT_PER_PAGE,
         }
@@ -174,7 +173,10 @@ class ChallongeExporter:
             "params": params,
             "timeout": DEFAULT_TIMEOUT,
             "auth": (self.api_key, ""),
-            "headers": {"Accept": "application/json"},
+            "headers": {
+                "Accept": "application/vnd.api+json",
+                "User-Agent": "ChallongeAnalisis/1.0",
+            },
         }
         for attempt in range(1, max_attempts + 1):
             response = requests.get(url, **request_kwargs)
