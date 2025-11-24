@@ -3,13 +3,13 @@ import argparse
 import csv
 import datetime as dt
 import os
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
 
 
-BASE_URL = "https://api.challonge.com/v1/tournaments.json"
+BASE_URL = "https://api.challonge.com/v2"
 DEFAULT_COMMUNITY = "fabco"
 DEFAULT_TIMEOUT = 30
 
@@ -17,9 +17,12 @@ DEFAULT_TIMEOUT = 30
 class ChallongeExporter:
     """Helper to fetch and save tournaments from Challonge."""
 
-    def __init__(self, api_key: str, community: str, year: int) -> None:
+    def __init__(
+        self, api_key: str, community: str, community_id: str, year: int
+    ) -> None:
         self.api_key = api_key
         self.community = community
+        self.community_id = community_id
         self.year = year
 
     def fetch_tournaments(self) -> List[Dict[str, Optional[str]]]:
@@ -28,33 +31,47 @@ class ChallongeExporter:
         Returns a list of tournament dictionaries already filtered by year.
         """
 
-        page = 1
         results: List[Dict[str, Optional[str]]] = []
+        url = f"{BASE_URL}/communities/{self.community_id}/tournaments"
+        page = 1
         params = {
             "api_key": self.api_key,
-            "subdomain": self.community,
             "state": "all",
             "per_page": 200,
         }
 
-        while True:
+        while url:
             params["page"] = page
-            response = requests.get(BASE_URL, params=params, timeout=DEFAULT_TIMEOUT)
+            response = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
             response.raise_for_status()
             payload = response.json()
 
-            if not payload:
+            data = payload.get("data", []) or []
+            for entry in data:
+                attributes = self._extract_attributes(entry)
+                if not attributes or not self._is_in_year(attributes):
+                    continue
+                results.append(self._normalize_tournament(attributes))
+
+            next_url, page = self._next_page(payload, current_page=page)
+            if next_url:
+                url = next_url
+                params = {"api_key": self.api_key}
+            else:
                 break
 
-            for wrapped in payload:
-                tournament = wrapped.get("tournament", {})
-                if not self._is_in_year(tournament):
-                    continue
-                results.append(self._normalize_tournament(tournament))
-
-            page += 1
-
         return results
+
+    def _extract_attributes(self, entry: Dict[str, object]) -> Dict[str, Optional[str]]:
+        attributes = dict(entry.get("attributes", {}) or {})
+        attributes.setdefault("id", entry.get("id"))
+        relationships = entry.get("relationships", {}) or {}
+
+        participants = relationships.get("participants", {}) or {}
+        if not attributes.get("participants_count"):
+            attributes["participants_count"] = participants.get("count")
+
+        return attributes
 
     def _is_in_year(self, tournament: Dict[str, Optional[str]]) -> bool:
         date_fields = ["started_at", "created_at"]
@@ -73,6 +90,28 @@ class ChallongeExporter:
             return dt.datetime.fromisoformat(sanitized)
         except ValueError:
             return None
+
+    def _next_page(
+        self, payload: Dict[str, object], current_page: int
+    ) -> Tuple[Optional[str], int]:
+        links = payload.get("links", {}) or {}
+        meta = payload.get("meta", {}) or {}
+
+        if links.get("next"):
+            return links["next"], current_page + 1
+
+        next_page = meta.get("next_page")
+        total_pages = meta.get("total_pages")
+        meta_current_page = meta.get("current_page")
+        if next_page and (
+            not total_pages or not meta_current_page or meta_current_page < total_pages
+        ):
+            return (
+                f"{BASE_URL}/communities/{self.community_id}/tournaments?page={next_page}",
+                next_page,
+            )
+
+        return None, current_page
 
     def _normalize_tournament(self, tournament: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
         return {
@@ -127,6 +166,15 @@ def parse_args() -> argparse.Namespace:
         help="Challonge community subdomain to fetch tournaments for.",
     )
     parser.add_argument(
+        "--community-id",
+        "-i",
+        default=None,
+        help=(
+            "Challonge community identifier for the v2 API. Falls back to "
+            "CHALLONGE_COMMUNITY_ID environment variable if unset."
+        ),
+    )
+    parser.add_argument(
         "--year",
         "-y",
         type=int,
@@ -146,8 +194,19 @@ def main() -> None:
     args = parse_args()
     api_key = load_api_key(args.env_file)
 
+    community_id = args.community_id or os.getenv("CHALLONGE_COMMUNITY_ID")
+    if not community_id:
+        raise SystemExit(
+            "CHALLONGE_COMMUNITY_ID is required. Provide --community-id or set it in the env."
+        )
+
     output_path = args.output or f"tournaments_{args.community}_{args.year}.csv"
-    exporter = ChallongeExporter(api_key=api_key, community=args.community, year=args.year)
+    exporter = ChallongeExporter(
+        api_key=api_key,
+        community=args.community,
+        community_id=community_id,
+        year=args.year,
+    )
 
     tournaments = exporter.fetch_tournaments()
     exporter.write_csv(tournaments, output_path)

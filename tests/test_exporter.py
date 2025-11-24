@@ -22,49 +22,76 @@ def _make_response(payload: Any) -> mock.Mock:
 
 
 def test_fetch_tournaments_filters_by_year_and_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
-    tournaments_page_one = [
-        {
-            "tournament": {
-                "id": 1,
-                "name": "2024 Event",
-                "started_at": "2024-03-01T12:00:00Z",
-                "created_at": "2024-02-01T10:00:00Z",
-                "participants_count": 16,
-            }
+    page_one_payload = {
+        "data": [
+            {
+                "id": "1",
+                "attributes": {
+                    "name": "2024 Event",
+                    "started_at": "2024-03-01T12:00:00Z",
+                    "created_at": "2024-02-01T10:00:00Z",
+                    "participants_count": 16,
+                    "full_challonge_url": "https://challonge.com/2024-event",
+                },
+            },
+            {
+                "id": "2",
+                "attributes": {
+                    "name": "2023 Event",
+                    "started_at": "2023-01-01T12:00:00Z",
+                },
+            },
+        ],
+        "links": {
+            "next": "https://api.challonge.com/v2/communities/123/tournaments?page=2"
         },
-        {
-            "tournament": {
-                "id": 2,
-                "name": "2023 Event",
-                "started_at": "2023-01-01T12:00:00Z",
+        "meta": {"current_page": 1, "total_pages": 2},
+    }
+    page_two_payload = {
+        "data": [
+            {
+                "id": "3",
+                "attributes": {
+                    "name": "2024 Event 2",
+                    "started_at": "2024-06-01T12:00:00Z",
+                },
+                "relationships": {"participants": {"count": 8}},
             }
-        },
-    ]
-    responses = {
-        1: _make_response(tournaments_page_one),
-        2: _make_response([]),
+        ],
+        "links": {},
+        "meta": {"current_page": 2, "total_pages": 2},
+    }
+
+    calls: Dict[int, mock.Mock] = {
+        1: _make_response(page_one_payload),
+        2: _make_response(page_two_payload),
     }
 
     def fake_get(url: str, params: Dict[str, Any], timeout: int) -> mock.Mock:
-        assert url.endswith("/tournaments.json")
+        assert url.startswith("https://api.challonge.com/v2/communities/123/tournaments")
         assert params["api_key"] == "secret"
-        assert params["subdomain"] == "fabco"
-        page = params["page"]
-        assert page in responses
-        return responses[page]
+        page_number = params.get("page", 1)
+        assert page_number in calls
+        return calls[page_number]
 
     monkeypatch.setattr("requests.get", fake_get)
 
-    exporter = ChallongeExporter(api_key="secret", community="fabco", year=2024)
+    exporter = ChallongeExporter(
+        api_key="secret", community="fabco", community_id="123", year=2024
+    )
     tournaments = exporter.fetch_tournaments()
 
-    assert len(tournaments) == 1
-    assert tournaments[0]["id"] == 1
+    assert len(tournaments) == 2
+    assert tournaments[0]["id"] == "1"
     assert tournaments[0]["participants_count"] == 16
+    assert tournaments[1]["id"] == "3"
+    assert tournaments[1]["participants_count"] == 8
 
 
 def test_write_csv_includes_expected_headers(tmp_path: Path) -> None:
-    exporter = ChallongeExporter(api_key="secret", community="fabco", year=2024)
+    exporter = ChallongeExporter(
+        api_key="secret", community="fabco", community_id="123", year=2024
+    )
     tournaments = [
         {
             "id": 1,
@@ -102,7 +129,9 @@ def test_write_csv_includes_expected_headers(tmp_path: Path) -> None:
 
 
 def test_parse_date_handles_missing_timezone() -> None:
-    exporter = ChallongeExporter(api_key="secret", community="fabco", year=2024)
+    exporter = ChallongeExporter(
+        api_key="secret", community="fabco", community_id="123", year=2024
+    )
     parsed = exporter._parse_date("2024-05-01T10:00:00")
     assert isinstance(parsed, dt.datetime)
     assert parsed.year == 2024
