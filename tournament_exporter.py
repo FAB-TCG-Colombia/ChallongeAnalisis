@@ -46,8 +46,23 @@ except ModuleNotFoundError:  # pragma: no cover
             status = getattr(resp, "status", 200)
             return _FallbackResponse(status_code=status, text=content)
 
+    def _fallback_post(
+        url: str,
+        data: Dict[str, object],
+        timeout: int,
+        headers: Dict[str, str] | None = None,
+        **_: object,
+    ):
+        encoded = urllib.parse.urlencode(data).encode()
+        req = urllib.request.Request(url, data=encoded, headers=headers or {}, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content = resp.read().decode("utf-8")
+            status = getattr(resp, "status", 200)
+            return _FallbackResponse(status_code=status, text=content)
+
     requests = SimpleNamespace(  # type: ignore
         get=_fallback_get,
+        post=_fallback_post,
         HTTPError=_FallbackHTTPError,
         Response=_FallbackResponse,
         exceptions=SimpleNamespace(HTTPError=_FallbackHTTPError),
@@ -64,15 +79,16 @@ BASE_URL = "https://api.challonge.com/v2"
 DEFAULT_COMMUNITY = "fabco"
 DEFAULT_TIMEOUT = 30
 DEFAULT_PER_PAGE = 200
+OAUTH_TOKEN_URL = "https://api.challonge.com/oauth/token"
 
 
 class ChallongeExporter:
     """Helper to fetch and save tournaments from Challonge."""
 
     def __init__(
-        self, api_key: str, community: str, community_id: str, year: int
+        self, access_token: str, community: str, community_id: str, year: int
     ) -> None:
-        self.api_key = api_key
+        self.access_token = access_token
         self.community = community
         self.community_id = community_id
         self.year = year
@@ -172,10 +188,9 @@ class ChallongeExporter:
         request_kwargs = {
             "params": params,
             "timeout": DEFAULT_TIMEOUT,
-            "auth": (self.api_key, ""),
             "headers": {
                 "Accept": "application/json",
-                "Authorization-Type": "v2",
+                "Authorization": f"Bearer {self.access_token}",
                 "User-Agent": "ChallongeAnalisis/1.0",
             },
         }
@@ -251,7 +266,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--env-file",
         default=".env",
-        help="Optional path to an environment file containing CHALLONGE_API_KEY.",
+        help=(
+            "Optional path to an environment file containing OAuth credentials "
+            "or CHALLONGE_ACCESS_TOKEN."
+        ),
     )
     parser.add_argument(
         "--community",
@@ -266,6 +284,30 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Challonge community identifier for the v2 API. Falls back to "
             "CHALLONGE_COMMUNITY_ID environment variable if unset."
+        ),
+    )
+    parser.add_argument(
+        "--client-id",
+        default=None,
+        help=(
+            "Optional OAuth client identifier. Falls back to CHALLONGE_CLIENT_ID "
+            "environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--client-secret",
+        default=None,
+        help=(
+            "Optional OAuth client secret. Falls back to CHALLONGE_CLIENT_SECRET "
+            "environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--access-token",
+        default=None,
+        help=(
+            "Direct OAuth access token to use for API calls. Falls back to "
+            "CHALLONGE_ACCESS_TOKEN environment variable."
         ),
     )
     parser.add_argument(
@@ -286,7 +328,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    api_key = load_api_key(args.env_file)
+    access_token = load_access_token(
+        env_file=args.env_file,
+        access_token=args.access_token,
+        client_id=args.client_id,
+        client_secret=args.client_secret,
+    )
 
     community_id = args.community_id or os.getenv("CHALLONGE_COMMUNITY_ID")
     if not community_id:
@@ -296,7 +343,7 @@ def main() -> None:
 
     output_path = args.output or f"tournaments_{args.community}_{args.year}.csv"
     exporter = ChallongeExporter(
-        api_key=api_key,
+        access_token=access_token,
         community=args.community,
         community_id=community_id,
         year=args.year,
@@ -307,31 +354,75 @@ def main() -> None:
     print(f"Exported {len(tournaments)} tournaments to {output_path}")
 
 
-def load_api_key(env_file: str = ".env") -> str:
-    """Load the Challonge API key from the environment or a .env file."""
+def load_access_token(
+    env_file: str = ".env",
+    *,
+    access_token: Optional[str] = None,
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+) -> str:
+    """Load or obtain a Challonge OAuth access token."""
 
     if env_file:
         load_dotenv(env_file)
-        if not os.getenv("CHALLONGE_API_KEY") and os.path.exists(env_file):
-            api_key_from_file = _read_key_from_file(env_file)
-            if api_key_from_file:
-                os.environ["CHALLONGE_API_KEY"] = api_key_from_file
+        if not os.getenv("CHALLONGE_ACCESS_TOKEN") and os.path.exists(env_file):
+            token_from_file = _read_env_value(env_file, "CHALLONGE_ACCESS_TOKEN")
+            if token_from_file:
+                os.environ["CHALLONGE_ACCESS_TOKEN"] = token_from_file
+        for key in ("CHALLONGE_CLIENT_ID", "CHALLONGE_CLIENT_SECRET"):
+            if not os.getenv(key) and os.path.exists(env_file):
+                value = _read_env_value(env_file, key)
+                if value:
+                    os.environ[key] = value
+
+    token = access_token or os.getenv("CHALLONGE_ACCESS_TOKEN")
+    if token:
+        return token
+
+    resolved_client_id = client_id or os.getenv("CHALLONGE_CLIENT_ID")
+    resolved_client_secret = client_secret or os.getenv("CHALLONGE_CLIENT_SECRET")
+
+    if resolved_client_id and resolved_client_secret:
+        return request_access_token(resolved_client_id, resolved_client_secret)
 
     api_key = os.getenv("CHALLONGE_API_KEY")
-    if not api_key:
-        raise SystemExit(
-            "CHALLONGE_API_KEY is required. Set it in the environment or the provided env file."
-        )
-    return api_key
+    if api_key:
+        return api_key
+
+    raise SystemExit(
+        "Challonge OAuth credentials are required. Provide CHALLONGE_ACCESS_TOKEN or client "
+        "credentials via environment variables or CLI flags."
+    )
 
 
-def _read_key_from_file(env_file: str) -> Optional[str]:
-    """Lightweight parser to extract CHALLONGE_API_KEY when dotenv is unavailable."""
+def request_access_token(client_id: str, client_secret: str) -> str:
+    """Exchange client credentials for an OAuth access token."""
+
+    response = requests.post(
+        OAUTH_TOKEN_URL,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
+        headers={"Accept": "application/json", "User-Agent": "ChallongeAnalisis/1.0"},
+        timeout=DEFAULT_TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not token:
+        raise SystemExit("OAuth token response missing access_token")
+    return str(token)
+
+
+def _read_env_value(env_file: str, key: str) -> Optional[str]:
+    """Lightweight parser to extract a key from an env-style file when dotenv is unavailable."""
 
     try:
         with open(env_file, encoding="utf-8") as handle:
             for line in handle:
-                if line.strip().startswith("CHALLONGE_API_KEY"):
+                if line.strip().startswith(f"{key}="):
                     _, _, value = line.partition("=")
                     return value.strip().strip('"').strip("'")
     except OSError:

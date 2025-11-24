@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import tournament_exporter
-from tournament_exporter import ChallongeExporter, load_api_key
+from tournament_exporter import ChallongeExporter, load_access_token, request_access_token
 
 
 def _make_response(payload: Any) -> mock.Mock:
@@ -95,10 +95,10 @@ def test_fetch_tournaments_filters_by_year_and_paginates(monkeypatch: pytest.Mon
         headers: Optional[Dict[str, str]] = None,
     ) -> mock.Mock:
         assert url.startswith("https://api.challonge.com/v2/communities/123/tournaments")
-        assert auth == ("secret", "")
         assert "api_key" not in params
+        assert auth is None
         assert headers and headers.get("Accept") == "application/json"
-        assert headers.get("Authorization-Type") == "v2"
+        assert headers.get("Authorization") == "Bearer secret"
         assert headers.get("User-Agent") == "ChallongeAnalisis/1.0"
         page_number = params.get("page", 1)
         assert page_number in calls
@@ -107,7 +107,7 @@ def test_fetch_tournaments_filters_by_year_and_paginates(monkeypatch: pytest.Mon
     monkeypatch.setattr("requests.get", fake_get)
 
     exporter = ChallongeExporter(
-        api_key="secret", community="fabco", community_id="123", year=2024
+        access_token="secret", community="fabco", community_id="123", year=2024
     )
     tournaments = exporter.fetch_tournaments()
 
@@ -149,16 +149,16 @@ def test_fetch_tournaments_merges_timestamps_and_participant_meta(
         auth: Any = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> mock.Mock:
-        assert auth == ("secret", "")
+        assert auth is None
         assert headers and headers.get("Accept") == "application/json"
-        assert headers.get("Authorization-Type") == "v2"
+        assert headers.get("Authorization") == "Bearer secret"
         assert headers.get("User-Agent") == "ChallongeAnalisis/1.0"
         return _make_response(payload)
 
     monkeypatch.setattr("requests.get", fake_get)
 
     exporter = ChallongeExporter(
-        api_key="secret", community="fabco", community_id="123", year=2024
+        access_token="secret", community="fabco", community_id="123", year=2024
     )
 
     tournaments = exporter.fetch_tournaments()
@@ -193,16 +193,16 @@ def test_fetch_tournaments_retries_on_server_error(
         auth: Any = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> mock.Mock:
-        assert auth == ("secret", "")
+        assert auth is None
         assert headers and headers.get("Accept") == "application/json"
-        assert headers.get("Authorization-Type") == "v2"
+        assert headers.get("Authorization") == "Bearer secret"
         assert headers.get("User-Agent") == "ChallongeAnalisis/1.0"
         return responses.pop(0)
 
     monkeypatch.setattr("requests.get", fake_get)
 
     exporter = ChallongeExporter(
-        api_key="secret", community="fabco", community_id="123", year=2024
+        access_token="secret", community="fabco", community_id="123", year=2024
     )
 
     tournaments = exporter.fetch_tournaments()
@@ -212,7 +212,7 @@ def test_fetch_tournaments_retries_on_server_error(
 
 def test_write_csv_includes_expected_headers(tmp_path: Path) -> None:
     exporter = ChallongeExporter(
-        api_key="secret", community="fabco", community_id="123", year=2024
+        access_token="secret", community="fabco", community_id="123", year=2024
     )
     tournaments = [
         {
@@ -252,18 +252,40 @@ def test_write_csv_includes_expected_headers(tmp_path: Path) -> None:
 
 def test_parse_date_handles_missing_timezone() -> None:
     exporter = ChallongeExporter(
-        api_key="secret", community="fabco", community_id="123", year=2024
+        access_token="secret", community="fabco", community_id="123", year=2024
     )
     parsed = exporter._parse_date("2024-05-01T10:00:00")
     assert isinstance(parsed, dt.datetime)
     assert parsed.year == 2024
 
 
-def test_load_api_key_prefers_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_access_token_prefers_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env_file = tmp_path / ".env"
-    env_file.write_text("CHALLONGE_API_KEY=from_env_file\n", encoding="utf-8")
-    monkeypatch.delenv("CHALLONGE_API_KEY", raising=False)
+    env_file.write_text("CHALLONGE_ACCESS_TOKEN=from_env_file\n", encoding="utf-8")
+    monkeypatch.delenv("CHALLONGE_ACCESS_TOKEN", raising=False)
 
-    api_key = load_api_key(env_file=str(env_file))
+    token = load_access_token(env_file=str(env_file))
 
-    assert api_key == "from_env_file"
+    assert token == "from_env_file"
+
+
+def test_request_access_token_uses_client_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    token_payload = {"access_token": "fetched"}
+
+    def fake_post(url: str, data: Dict[str, str], headers: Dict[str, str], timeout: int):
+        assert url == tournament_exporter.OAUTH_TOKEN_URL
+        assert data == {
+            "grant_type": "client_credentials",
+            "client_id": "cid",
+            "client_secret": "csecret",
+        }
+        assert headers["Accept"] == "application/json"
+        assert headers["User-Agent"] == "ChallongeAnalisis/1.0"
+        assert timeout == tournament_exporter.DEFAULT_TIMEOUT
+        return _make_response(token_payload)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    token = request_access_token("cid", "csecret")
+
+    assert token == "fetched"
