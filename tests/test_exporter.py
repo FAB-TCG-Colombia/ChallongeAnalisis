@@ -2,7 +2,7 @@ import csv
 import datetime as dt
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from unittest import mock
 
 import pytest
@@ -87,9 +87,17 @@ def test_fetch_tournaments_filters_by_year_and_paginates(monkeypatch: pytest.Mon
         2: _make_response(page_two_payload),
     }
 
-    def fake_get(url: str, params: Dict[str, Any], timeout: int) -> mock.Mock:
+    def fake_get(
+        url: str,
+        params: Dict[str, Any],
+        timeout: int,
+        auth: Any = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> mock.Mock:
         assert url.startswith("https://api.challonge.com/v2/communities/123/tournaments")
         assert params["api_key"] == "secret"
+        assert auth == ("secret", "")
+        assert headers and headers.get("Accept") == "application/json"
         page_number = params.get("page", 1)
         assert page_number in calls
         return calls[page_number]
@@ -132,7 +140,15 @@ def test_fetch_tournaments_merges_timestamps_and_participant_meta(
         "meta": {},
     }
 
-    def fake_get(url: str, params: Dict[str, Any], timeout: int) -> mock.Mock:
+    def fake_get(
+        url: str,
+        params: Dict[str, Any],
+        timeout: int,
+        auth: Any = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> mock.Mock:
+        assert auth == ("secret", "")
+        assert headers and headers.get("Accept") == "application/json"
         return _make_response(payload)
 
     monkeypatch.setattr("requests.get", fake_get)
@@ -166,7 +182,15 @@ def test_fetch_tournaments_retries_on_server_error(
 
     responses = [_make_error_response(520), _make_response(payload)]
 
-    def fake_get(url: str, params: Dict[str, Any], timeout: int) -> mock.Mock:
+    def fake_get(
+        url: str,
+        params: Dict[str, Any],
+        timeout: int,
+        auth: Any = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> mock.Mock:
+        assert auth == ("secret", "")
+        assert headers and headers.get("Accept") == "application/json"
         return responses.pop(0)
 
     monkeypatch.setattr("requests.get", fake_get)

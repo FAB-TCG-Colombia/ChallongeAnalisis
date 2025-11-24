@@ -36,7 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover
             self.response = response
             self.status_code = response.status_code
 
-    def _fallback_get(url: str, params: Dict[str, object], timeout: int):
+    def _fallback_get(url: str, params: Dict[str, object], timeout: int, **_: object):
         if params:
             query = urllib.parse.urlencode(params)
             separator = "&" if "?" in url else "?"
@@ -170,8 +170,14 @@ class ChallongeExporter:
         http_error = getattr(requests, "HTTPError", None)
         http_error = http_error or getattr(getattr(requests, "exceptions", None), "HTTPError", None)
         last_error: Optional[Exception] = None
+        request_kwargs = {
+            "params": params,
+            "timeout": DEFAULT_TIMEOUT,
+            "auth": (self.api_key, ""),
+            "headers": {"Accept": "application/json"},
+        }
         for attempt in range(1, max_attempts + 1):
-            response = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
+            response = requests.get(url, **request_kwargs)
             try:
                 response.raise_for_status()
                 return response
