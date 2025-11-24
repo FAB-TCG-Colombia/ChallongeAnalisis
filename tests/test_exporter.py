@@ -73,7 +73,7 @@ def test_fetch_tournaments_filters_by_year_and_paginates(monkeypatch: pytest.Mon
                 "id": "3",
                 "attributes": {
                     "name": "2024 Event 2",
-                    "started_at": "2024-06-01T12:00:00Z",
+                    "starts_at": "2024-06-01T12:00:00Z",
                 },
                 "relationships": {"participants": {"count": 8}},
             }

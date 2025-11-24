@@ -1,5 +1,6 @@
 """Download Challonge tournaments for a given community and year into CSV."""
 from __future__ import annotations
+
 import argparse
 import csv
 import datetime as dt
@@ -119,7 +120,7 @@ class ChallongeExporter:
         relationships = entry.get("relationships", {}) or {}
 
         participants = relationships.get("participants", {}) or {}
-        if not attributes.get("participants_count"):
+        if attributes.get("participants_count") is None:
             meta = participants.get("meta", {}) if isinstance(participants, dict) else {}
             if not meta and isinstance(participants, dict):
                 links = participants.get("links", {}) or {}
@@ -133,7 +134,7 @@ class ChallongeExporter:
         return attributes
 
     def _is_in_year(self, tournament: Dict[str, Optional[str]]) -> bool:
-        date_fields = ["started_at", "created_at"]
+        date_fields = ["started_at", "starts_at", "created_at"]
         for field in date_fields:
             raw_date = tournament.get(field)
             if not raw_date:
