@@ -5,7 +5,7 @@ import csv
 import datetime as dt
 import os
 import time
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional
 
 try:  # pragma: no cover - exercised indirectly in tests
     import requests
@@ -62,6 +62,7 @@ except ModuleNotFoundError:  # pragma: no cover
 BASE_URL = "https://api.challonge.com/v2"
 DEFAULT_COMMUNITY = "fabco"
 DEFAULT_TIMEOUT = 30
+DEFAULT_PER_PAGE = 200
 
 
 class ChallongeExporter:
@@ -87,7 +88,7 @@ class ChallongeExporter:
         params = {
             "api_key": self.api_key,
             "state": "all",
-            "per_page": 200,
+            "per_page": DEFAULT_PER_PAGE,
         }
 
         while url:
@@ -102,10 +103,9 @@ class ChallongeExporter:
                     continue
                 results.append(self._normalize_tournament(attributes))
 
-            next_url, page = self._next_page(payload, current_page=page)
-            if next_url:
-                url = next_url
-                params = {"api_key": self.api_key}
+            next_page = self._next_page(payload, current_page=page)
+            if next_page:
+                page = next_page
             else:
                 break
 
@@ -114,11 +114,21 @@ class ChallongeExporter:
     def _extract_attributes(self, entry: Dict[str, object]) -> Dict[str, Optional[str]]:
         attributes = dict(entry.get("attributes", {}) or {})
         attributes.setdefault("id", entry.get("id"))
+        self._merge_timestamps(attributes)
+
         relationships = entry.get("relationships", {}) or {}
 
         participants = relationships.get("participants", {}) or {}
         if not attributes.get("participants_count"):
-            attributes["participants_count"] = participants.get("count")
+            meta = participants.get("meta", {}) if isinstance(participants, dict) else {}
+            if not meta and isinstance(participants, dict):
+                links = participants.get("links", {}) or {}
+                meta = links.get("meta", {})
+            attributes["participants_count"] = (
+                participants.get("count")
+                if isinstance(participants, dict)
+                else None
+            ) or (meta.get("count") if isinstance(meta, dict) else None)
 
         return attributes
 
@@ -140,27 +150,18 @@ class ChallongeExporter:
         except ValueError:
             return None
 
-    def _next_page(
-        self, payload: Dict[str, object], current_page: int
-    ) -> Tuple[Optional[str], int]:
+    def _next_page(self, payload: Dict[str, object], current_page: int) -> Optional[int]:
         links = payload.get("links", {}) or {}
         meta = payload.get("meta", {}) or {}
+        meta_current = meta.get("current_page", current_page)
 
-        if links.get("next"):
-            return links["next"], current_page + 1
-
-        next_page = meta.get("next_page")
+        next_page = meta.get("next_page") or (meta_current + 1 if links.get("next") else None)
         total_pages = meta.get("total_pages")
-        meta_current_page = meta.get("current_page")
-        if next_page and (
-            not total_pages or not meta_current_page or meta_current_page < total_pages
-        ):
-            return (
-                f"{BASE_URL}/communities/{self.community_id}/tournaments?page={next_page}",
-                next_page,
-            )
 
-        return None, current_page
+        if next_page and (not total_pages or next_page <= total_pages):
+            return next_page
+
+        return None
 
     def _get_with_retry(
         self, url: str, params: Dict[str, object], max_attempts: int = 3
@@ -186,6 +187,15 @@ class ChallongeExporter:
         if last_error:
             raise last_error
         raise requests.HTTPError("Unknown error while fetching tournaments")
+
+    def _merge_timestamps(self, attributes: Dict[str, Optional[str]]) -> None:
+        timestamps = attributes.get("timestamps")
+        if not isinstance(timestamps, dict):
+            return
+
+        for key in ("created_at", "started_at", "completed_at", "starts_at"):
+            if not attributes.get(key) and timestamps.get(key):
+                attributes[key] = timestamps[key]
 
     def _normalize_tournament(self, tournament: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
         return {

@@ -108,6 +108,48 @@ def test_fetch_tournaments_filters_by_year_and_paginates(monkeypatch: pytest.Mon
     assert tournaments[1]["participants_count"] == 8
 
 
+def test_fetch_tournaments_merges_timestamps_and_participant_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "data": [
+            {
+                "id": "10",
+                "attributes": {
+                    "name": "Timestamped Event",
+                    "timestamps": {
+                        "created_at": "2024-01-10T12:00:00Z",
+                        "started_at": "2024-01-11T13:00:00Z",
+                        "completed_at": "2024-01-12T14:00:00Z",
+                    },
+                },
+                "relationships": {
+                    "participants": {"links": {"meta": {"count": 12}}}
+                },
+            }
+        ],
+        "links": {},
+        "meta": {},
+    }
+
+    def fake_get(url: str, params: Dict[str, Any], timeout: int) -> mock.Mock:
+        return _make_response(payload)
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    exporter = ChallongeExporter(
+        api_key="secret", community="fabco", community_id="123", year=2024
+    )
+
+    tournaments = exporter.fetch_tournaments()
+
+    assert len(tournaments) == 1
+    tournament = tournaments[0]
+    assert tournament["participants_count"] == 12
+    assert tournament["started_at"] == "2024-01-11T13:00:00Z"
+    assert tournament["completed_at"] == "2024-01-12T14:00:00Z"
+
+
 def test_fetch_tournaments_retries_on_server_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
